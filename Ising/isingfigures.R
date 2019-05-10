@@ -10,16 +10,48 @@ img = resize(img,200,200)
 img@.Data = round(img@.Data)
 image(img)
 binarymtrx = img@.Data
-image(t(1-Matrix(binarymtrx))[200:1,], xlab = NULL, ylab = NULL, sub = "")
+image(t(1-Matrix(binarymtrx))[200:1,])
 source("isinghelpers.R")
 
 nbrs200=nbrs(200,200)
 hashobs = hashX(t(1-binarymtrx),nbrs200)
+#############################################################
+#to only reproduce the plots#################################
+load("isingfiguredata.RData")
+
+#AIS
+#plot the estimated c(y) for each iteration of AIS
+p1= ggplot(isingaismtrx) + geom_point(aes(x = 1:60,y = wtdmean)) + geom_ribbon(aes(x = 1:60, ymin = CIlo, ymax = CIup),alpha = 0.2) + 
+  theme_classic() + geom_hline(aes(yintercept = c1)) + geom_hline(aes(yintercept = c1 - 2*c1sd),linetype = "dotted")+ xlim(1.9,60) + 
+  geom_hline(aes(yintercept = c1+2*c1sd),linetype = "dotted") + ylab(paste("Estimated coverage at observed data")) + xlab("Number of iteration")
+
+print(p1)
+
+#GAM, fitteed curve
+p2 = ggplot(data = gamcurve) + geom_line(aes(x = s, y = chat)) + ylim(0.4,1) + 
+  labs(x = "Sufficient Statistic S(y)", y = "Estimated coverage") + 
+  theme_classic() + 
+  geom_segment(aes(x = hashobs, xend = hashobs, y = twosigerrorbar[1],yend = twosigerrorbar[2]), linetype = 2) + 
+  geom_point(aes(x = hashobs, y = cy))
+
+print(p2)
+
+#results from IS estimator in Lee et.al 2018
+rho = (1:10)/10
+issampler(rho)
+########################################################################
+########################################################################
+
+
+
+
+
 
 #the CDF is computed using Reimann sum, since the density can be evaluated pointwisely.
 th = seq(0,2,length.out = 5000)
 postOBSPDF = normpost(th,hashobs,200,200,FALSE)
 postOBSCDF = cumsum(postOBSPDF)*(th[2] - th[1])
+#compute the approximated CI
 approxCI = getCI(th,postOBSPDF,0.05)
 
 
@@ -27,14 +59,12 @@ approxCI = getCI(th,postOBSPDF,0.05)
 ###########approximately exact exchange algorithm##############
 ###############################################################
 
-isingexchange <- function(L,LSS,nbr,Xinitial){
+isingexchange <- function(L,LSS,nbr,X){
   thetavec = rep(NA,L/LSS)
   theta = 0.91 #initial theta
-  thetavec[1]= 0.91
-  #Xinitial is the initial image
   for (i in 2:L){
     proposal = rnorm(1,mean = theta, sd = 0.007) #random walk proposal
-    isingsimulateX = ising(proposal, 30000000,30000000,200,Xinitial, nbr)[[2]]
+    isingsimulateX = ising(proposal, 30000000,30000000,200,X, nbr)$X
     z = hashX(isingsimulateX, nbr)
     alpha = (z - 9270) * (proposal - theta)
     if (log(runif(1)) < alpha){
@@ -53,8 +83,8 @@ exchangepost = read.csv("exchangepost.csv")$x
 
 #simulating from the exact posterior:
 #exchangepost = isingexchange(7500,5,nbrs200,binarymtrx)
-#acf(exchangepost)
-#plot(exchangepost, type = "l") #looks promising
+acf(exchangepost)
+plot(exchangepost, type = "l") #looks promising
 #write.csv(exchangepost, file = "exchangepost.csv")
 
 
@@ -67,8 +97,6 @@ c1sd = sqrt(var((exchangepost>approxCI[1]) * (exchangepost<approxCI[2]))/1500)
 ###########Annealed importance sampling####################
 ###########################################################
 load("AISising.RData")
-
-###matlab exact: 0.520
 
 #get weighted mean of ci using ALgorithm2
 ci = (AISisingresult$par > approxCI[1]) * (AISisingresult$par < approxCI[2])
@@ -106,6 +134,7 @@ wtdci <- function(isingresult){
 
 isingaismtrx = wtdci(AISisingresult)
 
+#plot the estimated c(y) for each iteration of AIS
 p1= ggplot(isingaismtrx) + geom_point(aes(x = 1:60,y = wtdmean)) + geom_ribbon(aes(x = 1:60, ymin = CIlo, ymax = CIup),alpha = 0.2) + 
   theme_classic() + geom_hline(aes(yintercept = c1)) + geom_hline(aes(yintercept = c1 - 2*c1sd),linetype = "dotted")+ xlim(1.9,60) + 
   geom_hline(aes(yintercept = c1+2*c1sd),linetype = "dotted") + ylab(paste("Estimated coverage at observed data")) + xlab("Number of iteration")
@@ -119,6 +148,7 @@ print(p1)
 ##################################################################
 library(mgcv) #version  mgcv 1.8-17
 load("priorising.RData")
+
 
 #compute c_i for each s_i, takes roughly 5 min
 isingpriorci = calibalter(priorising$theta, priorising$hashy)
@@ -144,29 +174,32 @@ print(p2)
 
 library(gridExtra)
 grid.arrange(p1,p2,ncol = 2)
+
+
+
 ##################################################################
 #########IS sampler from Lee et al (2018)#########################
 ##################################################################
 
 #(phi,s) pairs sampled from approx.post distribution and exact likelihood
-head(approxpostpair)
+hist(approxpostpair[,1], xlab = "appeoximated posterior")
 
-#compute the ks-distance between s_i and s_obs
+#compute the ks-distance between s_i and s_obs, takes roughly 3 mins
 ksdist = rep(NA,1000)
 for (i in 1:1000){
   if (i %% 100 == 0) {print(i)}
-  postcdf = cumsum(normpost(th, approxpostpair$hashy[i], 200, 200, F) * (th[2] - th[1]))
+  postcdf = cumsum(normpost(th, approxpostpair$hashy[i], 200, 200, FALSE) * (th[2] - th[1]))
   ksdist[i] = max(abs(postOBSCDF - postcdf))
 }
 
+#compute tilde(p) and ci for pairs from approx.post. for the IS sampler, takes 5 mins
 lkd = loglkd(approxpostpair$phi,hashobs,200,200,80000)
+F = FALSE #just in case
 approxpostci = calibalter(approxpostpair$phi, approxpostpair$hashy)$c
 
 
-
-
 #issampler compute the IS estimate of c(y) described in Lee et al (2018)
-#for given tolerance levels rho
+#for given (vector of) tolerance levels rho
 
 issampler <- function(rho){
   returnmtrx = matrix(NA,nrow = length(rho), ncol = 2)
@@ -183,11 +216,13 @@ issampler <- function(rho){
     ESS = 1/sum(w^2) 
     returnmtrx[i,] = c(chat, ESS)
   }
+  returnmtrx = cbind(rho,returnmtrx)
+  colnames(returnmtrx)[1] = "rho"
   return(returnmtrx)
 }
 
-
-##output of the IS sampler for different tolerance level rho = 0.1,0.2,...,1. ESS is low
+##output of the IS sampler for different tolerance level rho = 0.1,0.2,...,1. 
+##note that ESS is low
 rho = (1:10)/10
 issampler(rho)
 

@@ -1,4 +1,5 @@
-ttt = proc.time()
+
+##inputs
 library(EBImage)
 library(Matrix)
 img = readImage("floe.png")
@@ -37,7 +38,7 @@ isingsimprior <- function(N){
 
 
 
-
+##simulating 1000 pairs from the joint prior.
 priorising = isingsimprior(1000)
 
 colnames(priorising) = c("theta","hashy")

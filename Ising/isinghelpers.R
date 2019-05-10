@@ -102,11 +102,11 @@ ising <- function(theta,L,SS,M,X = "rua", nb){
 
 
 
-#######################Cylindrical approximation##################
+#######################Toroidal approximation##################
 
 ##compute the normalizing constant for toroidal likelihood
 logZ <- function(m,n,K){
-  if (K <= 0.001){
+  if (K <= 0.001){ #for numerical stability
     return(m*n*log(2))
   }
   else{
@@ -153,7 +153,7 @@ loglkd <- function(theta, td, m, n, nume){
 
 
 
-#Approximated posterior, riemann sum kind of normalization
+#Approximated posterior, use a riemann sum kind of normalization
 normpost <- function(theta, td, m, n, free = F){
   if (free){
     nume = 2*m*n - m - n
@@ -188,7 +188,7 @@ rpost <- function(N, cdf, theta){
 ###################### Simulation and Calibration ################################
 ##################################################################################
 
-
+#get approximated Credibel interval
 getCI = function(th, post, alpha){
   upquant = 1 - alpha/2
   lwquant = alpha/2
@@ -203,7 +203,7 @@ getCI = function(th, post, alpha){
 }
 
 
-
+#wrapper for simulating from the joint prior
 isingsampling.seq = function(theta,useX = "rua"){
   theta = sort(theta)
   N = length(theta)
@@ -274,7 +274,8 @@ dist_metric_ising_ais = function(a,b){
 }
 
 
-########propose a given pair through T_n, which admits f_n as invariant distribution
+
+########propose a given pair (\phi,s(y)) through T_n, which admits f_n as invariant distribution
 
 aisinterpost <- function(theta, hashy, alpha, beta, dist, dprior, originalisingmtrx){
   thetaproposal = runif(1, max(theta - 0.01,0), min(theta + 0.01, 2))
@@ -290,8 +291,9 @@ aisinterpost <- function(theta, hashy, alpha, beta, dist, dprior, originalisingm
 }
 
 
-###propogate one pair through T_1,...,T_N-1 M-H kernels
 
+###propogate one pair (\phi,s(y_i)) through T_1,...,T_N-1 M-H kernels, record the weights
+##Run AIS for one pair of  (\phi,s(y_i))
 aisonepost <- function(initialtheta,initialhashy, alphaseq, betaseq, dist, dprior, initialisingmtrx){
   thetaseq = rep(NA, length(betaseq))
   hashyseq = rep(NA, length(betaseq))
@@ -320,47 +322,7 @@ aisonepost <- function(initialtheta,initialhashy, alphaseq, betaseq, dist, dprio
 
 
 
-
-
-
-
-
-
-
-
-
-
-#### wrapper, repeat the procedure for N points using foreach package
-
-AISparpost <- function(thetavec, hashvec, alphaseq, betaseq, dist, dprior){
-  #thetavec: is length Nvector from prior
-  #hashy: from likelihood with thetavec as parameter
-  #betaseq: sequence of tempreture
-  #dist: distance metric
-  #dprior: prior density
-  M = length(betaseq)
-  N = length(thetavec)
-  raw = foreach(i=1:N, .combine = rbind, .export = c("loglkd", "logZ","dist_metric_ising_ais","aisonepost", "aisinterpost", "ising", "nbrs", "hashX", "dist", "dprior", "thetavec", "hashvec", "betaseq", "alphaseq")) %dopar% aisonepost(thetavec[i],hashvec[i],alphaseq, betaseq, dist, dprior)
-  finpar = raw[seq(1,4*N,4),M]
-  logwtd = rowSums(raw[seq(3,N*4,4),])
-  logwtd = logwtd - max(logwtd)
-  finwtd = exp(logwtd)/sum(exp(logwtd))
-  storeinter = lapply(1:M, function(i){return(NA)})
-  for (j in 1:M){
-    interpar = raw[seq(1,4*N,4),j]
-    lwtd = raw[seq(4,N*4,4),j]
-    lwtd = lwtd - max(lwtd)
-    fwtd = exp(lwtd)/sum(exp(lwtd))
-    storeinter[[j]] = cbind(par = interpar, wtd = fwtd)
-  }
-  
-  return(list(par = finpar, weight = finwtd, inter = storeinter, raw = raw))
-}
-
-
-
 #handeling raw output of AIS
-
 AISisingprocess <- function(raw, betalength, thetalength){
   M = betalength
   N = thetalength

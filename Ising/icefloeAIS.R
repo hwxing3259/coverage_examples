@@ -1,4 +1,4 @@
-ttt = proc.time()
+#Inputs
 library(EBImage)
 library(Matrix)
 img = readImage("floe.png")
@@ -22,23 +22,13 @@ registerDoParallel()
 getDoParWorkers()
 
 
-
-#need: 
-#post par vector thetavec
-#post hashy vector hashvec
-#tempreture seequence alphaseq,betaseq
-#list of ising matrix correspoding to each post hashy value
-
-
-
-
-####compute the observed CDF using normpost
+####compute the approx CDF for observed data using normpost
 th = seq(0,2,length.out = 1000)
 postOBSCDF = cumsum(normpost(th,hashobs,200,200,F))*(th[2] - th[1])
 
-
 N = 1000
 
+###sample from the approx.post
 rpostsample = sort(rpost(N, postOBSCDF, th))
 
 #initialize:
@@ -56,11 +46,12 @@ approxpostpair = data.frame(phi = thetavec, hashy = hashvec)
 
 #tempreture sequence
 betaseq = 1.05^c(1:60)
-alphaseq = c(seq(0,1,length.out = 45),rep(1,15))
+alphaseq = c(seq(0,1,length.out = 50),rep(1,10))
 
-#run AIS sampler
+#run AIS sampler in parallel
 ais1000raw = foreach(i=1:N, .combine = rbind, .export = ls()) %dopar% aisonepost(thetavec[i],hashvec[i],alphaseq, betaseq, dist_metric_ising_ais, d.prior,isingmtrxlist[[i]])
 
+#turn raw output into summaries
 AISisingresult = AISisingprocess(aistry1000,60,1000)
 
 
