@@ -1,5 +1,3 @@
-
-
 #dpriior is CRP
 #log cpr probability
 log.pr.crp<-function(S,alpha,n) {
@@ -15,36 +13,6 @@ str2lst <- function(strinput){
                       sub(pattern = ",(", replacement = "", 
                           strsplit(strinput, ")" )[[1]], 
                           fixed = T), fixed = T),","))
-}
-
-
-
-##simulating y from prior given partition (list form)
-
-priorysimulate <- function(B, listpart){
-  aalable = levels(B$Name)
-  #listpart = mg2gm(part, aalable)
-  B$Sf = as.factor(gm2mg(listpart, B$Name))
-  b.m=lmer(formula = Y ~ Day * Stage + (-1 + Stage | Sf) + (-1 + Stage | Name),
-           data = B, REML = T, control = DAVE)
-  modelmtrx = cbind(getME(b.m, "X"), as.matrix(getME(b.m, "Z")))
-  npart = length(listpart)
-  #fixed effect: normal(0,1) for all 6 variables
-  beta = rnorm(6)
-  G1cov = rIW(V = diag(0.25,3), nu = 5)
-  G2cov = rIW(V = diag(0.25,3), nu = 5)
-  G1effect = rmvnorm(12, rep(0,3), G1cov)
-  G2effect = rmvnorm(npart, rep(0,3), G2cov)
-  finalbeta = c(beta, as.vector(t(G1effect)), as.vector(t(G2effect)))
-  #res = 1/rgamma(dim(B)[1],0.5,0.5)
-  
-  
-  ##############CHANGE: lower the sd
-  res = rnorm(dim(B)[1], mean = 0, sd = 0.1)
-  #############################
-  
-  priory = modelmtrx %*% finalbeta + res
-  return(priory)
 }
 
 
@@ -72,151 +40,284 @@ logpr.joint <- function(ysynth, anchor, B){
 }
 
 
+##simulating y from prior given partition (list form)
+priorysimulate <- function(B, listpart){
+  aalable = levels(B$Name)
+  #listpart = mg2gm(part, aalable)
+  B$Sf = as.factor(gm2mg(listpart, B$Name))
+  b.m=lmer(formula = Y ~ Day * Stage + (-1 + Stage | Sf) + (-1 + Stage | Name),
+           data = B, REML = T)
+  modelmtrx = cbind(getME(b.m, "X"), as.matrix(getME(b.m, "Z")))
+  npart = length(listpart)
+  #fixed effect: normal(0,1) prior for all 6 variables
+  beta = rnorm(6)
+  G1cov = rIW(V = diag(0.25,3), nu = 5)
+  G2cov = rIW(V = diag(0.25,3), nu = 5)
+  G1effect = rmvnorm(12, rep(0,3), G1cov)
+  G2effect = rmvnorm(npart, rep(0,3), G2cov)
+  finalbeta = c(beta, as.vector(t(G1effect)), as.vector(t(G2effect)))
+  sig = 1/rgamma(1,8,1) #equivalent to IG
+  res = rnorm(dim(B)[1], mean = 0, sd = sig)
+  priory = modelmtrx %*% finalbeta + res
+  return(priory)
+}
 
 
-#input: 
-# Part: a vector partition
-#y: simulated dataset
-#alpha,beta; tempreture
-#dist: dist.measure between y and y_simulated
-#dprior: crp log prob
+#simulate pair of (S,y_i)
+priorfunc <- function(B){
+  part = DP.sim(1,12)
+  while(max(part) == 1) {part = DP.sim(1,12)}
+  ysim = priorysimulate(B, mg2gm(part, levels(B$Name)))
+  return(list(part,ysim))
+}
 
-aisinterpartition <- function(B, initialpart, initialy, alpha, beta, dist, yobs, partpostmass, anchor, K){
-  #generating new partition
-  old.y = initialy
-  #number of labels
-  N = length(levels(B$Name))
-  #group lable, lowercase a
-  aalabel = levels(B$Name)  
-  #group lable, uppercase a
-  capitalAlable = unlist(lapply(aalabel, function(i){return(sub(pattern = "a", replacement = "A", x = i))}))
-  stringpartition = prettyPart(mg2gm(initialpart, capitalAlable), capitalAlable)
-  #BIC for observed data and given partition
-  logp = logpr.joint(yobs, stringpartition, B)
-  priorold = logp[1]
-  approxpostold = logp[2]
-  distold = dist(old.y, partpostmass, B, anchor, K)
-  #initial partition is a numeric vector
-  Sf = mg2gm(initialpart, aalabel)
-  updateindx = sample(1:N, 1)
-  for (i in updateindx){
-    #propose a partition
-    Spf=GenerateCandidate2(aalabel,Sf,i)
-    #propose a observation vector
-    new.y = priorysimulate(B, Spf)  
-    stringpartitionnew = prettyPart(mg2gm(gm2mg(Spf, aalabel),capitalAlable), capitalAlable)
-    logpnew = logpr.joint(yobs, stringpartitionnew, B)
-    priornew = logpnew[1]
-    approxpostnew = logpnew[2]
-    distnew = dist(new.y, partpostmass, B, anchor, K)
-    #print(c((1 - alpha) * (approxpostnew - approxpostold), beta * (distold - distnew)))
-    MHR = priornew - priorold + (1 - alpha) * (approxpostnew - approxpostold) + beta * (distold - distnew)
-    #MHR = n.crp - o.crp #CRP prior target for debugging
+
+#sampling from the approx.post for partition and 
+#find the approximate credible set for synthetic data y_i
+runMCMCmodified<-function(B,EST,is.VE,F,J,SS,WTFI,alpha=1,VARY.ALPHA=FALSE,w.alpha=NA,APR=NA,SAVE_TO_FILE=FALSE,outfile=NA,DEBUG=FALSE,PART) {
+  
+  n=dim(B)[1]
+  
+  #levels of Amino Acids
+  AA=levels(B$Name); nl=length(AA)  
+  Sf= PART #initial groups for FE or RE clustering
+  Kf=length(Sf)
+  B$Sf=as.factor(gm2mg(Sf,B$Name))
+  #gm2mg: list of string representation to numeric label
+  #mg2gm: numeric label to list of string
+  
+  if (is.VE) {
+    Sv=as.list(AA) #initial groups for variance effect (VE) clusters
+    Kv=length(Sv)  #initial number of VE clusters
+    B$Sv=as.factor(gm2mg(Sv,B$Name))
+  }
+  
+  op=NA
+  if (EST=="LME") {
+    b.m=lme(fixed=F$FE,random=F$RE,weights=F$VF,data=B,method=F$MT,control=BOB) 
+    op=BIC(b.m)/(-2)
+  }
+  if (EST=="LMER") {
+    b.m=lmer(formula=F$FRE.LMER,data=B,REML=F$MT.LMER,control=DAVE)
+    op=BIC(b.m)/(-2)
+  }
+  if (EST=="LMBF") {
+    b.m=lmBF(formula=F$EF.LMBF, data=B, whichRandom=F$RE.LMBF, progress=FALSE, method=F$METHOD.LMBF, iterations=F$IS_SAMPLES.LMBF)
+    op=attributes(b.m)[[3]]$bf
+  }
+  if (is.na(op)) {error("ML estimator EST value non recognised. Use one of LME, LMER or LMBF.")}
+  
+  hashing=array(NA,1); row.names(hashing)<-prettyPart(Sf,AA); hashing[1]=op;
+  
+  #old log cluster prior
+  o.crp=log.pr.crp(Sf,alpha,nl)
+  if (is.VE) {o.crp=o.crp+log.pr.crp(Sv,alpha,nl)}
+  
+  #Clf: group lablel representation of the partition
+  THf=list(); CLf=matrix(NA,J/SS,nl); 
+  
+  #nSf: Cardnality of each set in the partition
+  #Af: the group lable for each acid
+  #kf: num of partitions
+  nSf=unlist(lapply(Sf,length)); Af=gm2mg(Sf,AA); Kf=length(Sf)
+  THf[[1]]=list(nSf); CLf[1,]=Af; 
+  
+  if (!is.VE) {
+    PL=matrix(NA,J/SS,4); 
+    PL[1,]=c(alpha,op,o.crp,Kf) 
+    THv=list(); CLv=matrix(NA,J/SS,nl); #not used just saves a test when we write
+  } else {
+    THv=list(); CLv=matrix(NA,J/SS,nl);
+    nSv=unlist(lapply(Sv,length)); Av=gm2mg(Sv,AA); Kv=length(Sv)
+    THv[[1]]=list(nSv); CLv[1,]=Av; 
+    PL=matrix(NA,J/SS,5); 
+    PL[1,]=c(alpha,op,o.crp,Kf,Kv) 
+  }
+  
+  #MCMC J steps each step sweeps all 2xnl cluster memberships
+  for (j in 1:J) {
     
-    if (log(runif(1))<MHR) {
-      Sf = Spf
-      old.y = new.y
-      priorold = priornew
-      approxpostold = approxpostnew
-      distold = distnew
-    }}
-  return(list(gm2mg(Sf, aalabel), old.y))}
-
-
-
-#partmass is pre-computed value of observed data
-cheap_part_ks <- function(ysim, partmass, B, anchor,K){
-  aa = logpr.joint(ysim, anchor[1:K], B)
-  aa = aa[,1] + aa[,2]
-  aa = aa - max(aa)
-  aa = cumsum(exp(aa)/sum(exp(aa)))
-  ks = max(abs(partmass - aa))
-  return(ks)
-}
-
-
-centered_y_ks <- function(ysim, yobs, dummy2, dummy3, dummy4){
-  ysim = ysim - mean(ysim)
-  yobs = yobs - mean(yobs)
-  ksdist = ks.test(ysim, yobs)$statistic
-  return(ksdist)
-}
-
-
-
-aisonepost <- function(B, initialpart, alphaseq, betaseq, dist, yobs, partpostmass, anchor, K){
-  initialy = priorysimulate(B, mg2gm(initialpart, levels(B$Name))) 
-  partseq = matrix(NA, ncol = length(levels(B$Name)), nrow = length(betaseq))
-  yseq = matrix(NA, ncol = length(yobs), nrow = length(betaseq))
-  logweightseq = rep(NA, length(betaseq))
-  cumwtd = rep(NA, length(betaseq))
-  part = initialpart
-  y = initialy
-  partseq[1,] = part
-  yseq[1,] = y
-  aalabel = levels(B$Name)  
-  capitalAlable = unlist(lapply(aalabel, function(i){return(sub(pattern = "a", replacement = "A", x = i))}))
-  #find the string partition of initial part
-  strpart = prettyPart(mg2gm(part,capitalAlable), capitalAlable)
-  print(strpart)
-  initial.dist = dist(y, partpostmass, B, anchor, K)
-  logweightseq[1] = -betaseq[1] * initial.dist - alphaseq[1] * logpr.joint(yobs, strpart, B)[2]
-  cumwtd[1] = logweightseq[1]
-  for (i in 2:(length(betaseq))){
-    prop = aisinterpartition(B, part, y, alphaseq[i-1],  betaseq[i-1], dist, B$Y, partpostmass, anchor,K)
-    partseq[i,] = prop[[1]]
-    yseq[i,] = prop[[2]]
-    strpart = prettyPart(mg2gm(prop[[1]],capitalAlable), capitalAlable)
-    #print(strpart)
-    newdistance = dist(prop[[2]], partpostmass, B, anchor, K)
-    logweightseq[i] = (betaseq[i-1] - betaseq[i]) * newdistance + (alphaseq[i-1] - alphaseq[i]) * logpr.joint(yobs, strpart, B)[2]
-    #print(c((betaseq[i-1] - betaseq[i]) * newdistance, (alphaseq[i-1] - alphaseq[i]) * logpr.joint(yobs, strpart, B)[2]))
-    cumwtd[i] = cumwtd[i-1] + logweightseq[i]
-    part = prop[[1]]
-    y = prop[[2]]
+    #write info about current state
+    o1=paste(sprintf('%g',c(j,alpha,op,o.crp)),collapse=' ')
+    o2=paste(sprintf('%g',c(Kf,nSf)),collapse=' ')
+    if (!is.VE) {
+      print(paste(c(o1,o2),collapse=' # '))
+    } else {
+      o3=paste(sprintf('%g',c(Kv,nSv)),collapse=' ')
+      print(paste(c(o1,o2,o3),collapse=' # '))
+    }
+    
+    #MCMC SRW update for alpha the CRP parameter
+    if (VARY.ALPHA) {
+      ap=abs(alpha+w.alpha*(2*runif(1)-1))
+      n.crp=log.pr.crp(Sf,ap,nl)
+      MHR = n.crp - o.crp + dexp(ap,rate=APR,log=TRUE) - dexp(alpha,rate=APR,log=TRUE)
+      
+      if (log(runif(1))<MHR) {
+        alpha=ap
+        o.crp=n.crp
+      }
+    }
+    
+    #go through each AA and update its cluster membership in f and v
+    for (i in 1:nl) {
+      
+      Spf=GenerateCandidate(AA,Sf,i)
+      
+      #numeric lable for membership
+      Afp=gm2mg(Spf,AA)
+      NEW=any(Afp!=Af)
+      
+      if ( (NEW && length(Spf)>1) || DEBUG) {
+        if (is.VE) {B$Sv=as.factor(gm2mg(Sv,B$Name))}
+        
+        if (DEBUG) {
+          np=op; b.mp=b.m
+        } else {
+          
+          
+          
+          
+          np=NA
+          if (EST=="LME") {
+            B$Sf=as.factor(gm2mg(Spf,B$Name))
+            b.mp=lme(fixed=F$FE,random=F$RE,weights=F$VF,data=B,method=F$MT,control=BOB) 
+            np=BIC(b.mp)/(-2)
+          }
+          if (EST=="LMER") {
+            #if ppSpf is different from the previous iteration (encoded in rowname), 
+            #then refit the model, compute BIC
+            #np is na if hashing does not store the partition before
+            #nt that the first line assign values to np if np is not NA
+            if (is.na(np<-hashing[ppSpf<-prettyPart(Spf,AA)])) {
+              B$Sf=as.factor(gm2mg(Spf,B$Name))
+              #  print(prettyPart(Spf,AA))
+              b.mp=lmer(formula=F$FRE.LMER,data=B,REML=F$MT.LMER,control=DAVE)
+              np=BIC(b.mp)/(-2)
+              # print(np)
+              #construct new_hashing, using string partition as rowname
+              new_hashing=array(NA,1); row.names(new_hashing)<-ppSpf; new_hashing[1]=np;
+              #record all old rownames(partition strings), add the new one.
+              oldnames=row.names(hashing); hashing=rbind(hashing,new_hashing); row.names(hashing)<-c(oldnames,ppSpf);
+            } else {print(hashing[ppSpf])}
+          }
+          if (EST=="LMBF") {
+            #this is Approximate penalty method - refresh both estimates
+            #recal old
+            B$Sf=as.factor(gm2mg(Sf,B$Name))
+            b.m=lmBF(formula=F$EF.LMBF, data=B, whichRandom=F$RE.LMBF, progress=FALSE, method=F$METHOD.LMBF, iterations=F$IS_SAMPLES.LMBF)
+            op=attributes(b.m)[[3]]$bf
+            #cal new
+            B$Sf=as.factor(gm2mg(Spf,B$Name))
+            b.mp=lmBF(formula=F$EF.LMBF, data=B, whichRandom=F$RE.LMBF, progress=FALSE, method=F$METHOD.LMBF, iterations=F$IS_SAMPLES.LMBF)
+            np=attributes(b.mp)[[3]]$bf
+          }
+          if (is.na(np)) {error("ML estimator EST value non recognised. Use one of LME, LMER or LMBF.")}
+        }
+        
+        
+        
+        
+        
+        
+        
+        #todo - do the cancelation in the MHR
+        n.crp=log.pr.crp(Spf,alpha,nl)
+        if (is.VE) {n.crp=n.crp+log.pr.crp(Sv,alpha,nl)} 
+        
+        MHR = np - op + n.crp - o.crp
+        #MHR = n.crp - o.crp #CRP prior target for debugging
+        
+        if (log(runif(1))<MHR) {
+          Sf=Spf
+          o.crp=n.crp
+          op=np
+          
+          #todo - in todo's above, nSp and Kp to be computed above
+          nSf=unlist(lapply(Sf,length))
+          Kf=length(Sf)
+          Af=gm2mg(Sf,AA)
+          
+          b.m=b.mp           #not really needed
+        }
+      }  
+      
+      ####not needed########
+      
+      if (is.VE) {
+        
+        Spv=GenerateCandidate(AA,Sv,i)
+        
+        if (length(Spv)>1) {
+          
+          B$Sf=as.factor(gm2mg(Sf,B$Name))
+          
+          np=NA
+          if (EST=="LME") {
+            B$Sv=as.factor(gm2mg(Spv,B$Name))
+            b.mp=lme(fixed=F$FE,random=RE,weights=F$VF,data=B,method=F$MT,control=BOB) 
+            np=BIC(b.mp)/(-2)
+          }
+          if (EST=="LMER") {
+            B$Sv=as.factor(gm2mg(Spv,B$Name))
+            b.mp=lmer(formula=F$FRE.LMER,data=B,REML=F$MT.LMER,control=DAVE)
+            np=BIC(b.mp)/(-2)
+          }
+          if (EST=="LMBF") {
+            #this is Approximate penalty method - refresh both estimates
+            B$Sv=as.factor(gm2mg(Sv,B$Name))
+            b.m=lmBF(formula=F$EF.LMBF, data=B, whichRandom=F$RE.LMBF, progress=FALSE, method=F$METHOD.LMBF, iterations=F$IS_SAMPLES.LMBF)
+            op=attributes(b.m)[[3]]$bf
+            B$Sv=as.factor(gm2mg(Spv,B$Name))
+            b.mp=lmBF(formula=F$EF.LMBF, data=B, whichRandom=F$RE.LMBF, progress=FALSE, method=F$METHOD.LMBF, iterations=F$IS_SAMPLES.LMBF)
+            np=attributes(b.mp)[[3]]$bf
+          }
+          
+          if (is.na(np)) {error("ML estimator EST value non recognised. Use one of LME, LMER or LMBF.")}
+          
+          #todo - do the cancelation in the MHR
+          n.crp=log.pr.crp(Sf,alpha,nl)+log.pr.crp(Spv,alpha,nl)
+          
+          MHR = np - op + n.crp - o.crp
+          #MHR = n.crp - o.crp #CRP prior target for debugging
+          
+          if (log(runif(1))<MHR) {
+            Sv=Spv
+            o.crp=n.crp
+            op=np
+            
+            #todo - in todo's above, nSp and Kp to be computed above
+            nSv=unlist(lapply(Sv,length))
+            Kv=length(Sv)
+            Av=gm2mg(Sv,AA)
+            
+            b.m=b.mp           #not really needed
+          }
+        }  
+      }
+    }
+    
+    #collect samples from the MCMC every SS steps
+    if (j%%SS==0) {
+      #conditional on the number in each cluster we know the dbn of the cluster weights w 
+      THf[[j/SS]]=list(nSf)
+      CLf[j/SS,]=Af; 
+      if (!is.VE) {
+        PL[j/SS,]=c(alpha,op,o.crp,Kf)
+      } else {
+        THv[[j/SS]]=list(nSv)
+        CLv[j/SS,]=Av; 
+        PL[j/SS,]=c(alpha,op,o.crp,Kf,Kv)
+      }   
+      if (SAVE_TO_FILE && ((j%%(WTFI*SS))==0)) save(CLf,PL,THf,CLv,THv,file=outfile)
+    }
   }
-  #return(list(part = partseq, y= yseq, logweight = logweightseq, wtd = cumwtd,
-  #            finalpart = part, finaly = y, finalwtd = cumwtd[length(betaseq)]))
-  #return(c(part,cumwtd[length(betaseq)]))
-  return(list(part,cumwtd,partseq,yseq))
+  
+  #END MCMC
+  
+  return(list(CLf=CLf,PL=PL,THf=THf,CLv=CLv,THv=THv))
+  
 }
-
-
-
-AISpartpost <- function(B, partition, alphaseq, betaseq, dist, yobs, partpostmass, anchor, K){
-  #thetavec: is length Nvector from prior
-  #hashy: from likelihood with thetavec as parameter
-  #betaseq: sequence of tempreture
-  #dist: distance metric
-  #dprior: prior density
-  M = length(betaseq)
-  N = dim(partition)[1]
-  raw = foreach(i=1:N, .export = ls()) %dopar% aisonepost(B, partition[i,], alphaseq, betaseq, dist, yobs, partpostmass, anchor, K)
-  return(raw)}
-
-
-
-
-wtdpart <- function(rua,indxx = NULL){
-
-  N = dim(rua)[1]
-  if(is.null(indxx)) {indxx = dim(rua)[2]}
-  wtd = rua[,indxx]
-  wtdnorm = exp(wtd - max(wtd))/sum(exp(wtd - max(wtd)))
-  ESS = 1/sum(wtdnorm^2)
-  AAlable = c("AIA", "GLU", "GLY", "ILE", "LEU", "LYS", "MET", "PHE", "THR", "TRP", "TYR" ,"VAL")
-  nameee = rep(NA,N)
-  for (i in 1:N){
-    nameee[i] = prettyPart(mg2gm(rua[i,1:12], AAlable), AAlable)
-  }
-  indx = rep(NA,N)
-  for (i in 1:N){
-    indx[i] = is.element(nameee[i], anchor)
-  }
-  return(c(sum(indx * wtdnorm), ESS))
-}
-
-
 
 
 
@@ -279,7 +380,8 @@ partitionreg72 <- function(tryregression,B){
 }
 
 
-
+#legal permutation of y corresponds to relabling the data
+#since the design is balanced and complete, do not change the result
 quadrandseq <- function(acidobs,B){
   quadrant = list()
   for (i in c("Day", "Stage", "Name")){
