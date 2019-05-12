@@ -1,4 +1,4 @@
-# Random efffect example
+# Random effect example
 
 Auxiliary.R, auxiliary_new.R, setup.R, partitionhelpers.R are helper functions.
 
